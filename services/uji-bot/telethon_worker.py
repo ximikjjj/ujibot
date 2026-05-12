@@ -60,8 +60,22 @@ async def start_live_reading(telegram_id: int, session_string: str, goals: list[
                 if not message_text or len(message_text) < 2:
                     return
 
+                # Get context: last 10 messages from this chat (both sides)
+                context = []
+                try:
+                    async for msg in client.iter_messages(event.chat_id, limit=10):
+                        if msg.message:
+                            sender = "Я" if not msg.out is False else "Собеседник"
+                            # out=True means sent by us, out=False means received
+                            sender = "Я" if msg.out else "Собеседник"
+                            context.append({"sender": sender, "text": msg.message})
+                    context.reverse()
+                except Exception:
+                    pass
+
                 result = await analyze_message(
                     incoming_message=message_text,
+                    context=context if context else None,
                     goals=goals or []
                 )
 
@@ -72,7 +86,8 @@ async def start_live_reading(telegram_id: int, session_string: str, goals: list[
                     analysis_result=result
                 )
 
-                from bot.notifications import send_suggestion_to_user
+                from bot.notifications import send_suggestion_to_user, store_variants
+                store_variants(telegram_id, result.get("variants", []))
                 await send_suggestion_to_user(telegram_id, message_text, result)
 
             except Exception as e:
