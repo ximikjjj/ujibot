@@ -4,8 +4,8 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from sqlalchemy import select
 from database import AsyncSessionLocal
-from models import User, Suggestion
-from ai_service import analyze_message
+from models import User, Suggestion, CommunicationStat
+from ai_service import analyze_message, analyze_chat_history
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,84 @@ async def save_suggestion(user_id: int, chat_id: int, incoming: str, analysis_re
         await session.commit()
 
 
-async def start_live_reading(telegram_id: int, session_string: str, goals: list[str] = None):
+async def save_stats(user_id: int, scales: dict):
+    async with AsyncSessionLocal() as session:
+        stat = CommunicationStat(
+            user_id=user_id,
+            confidence=int(scales.get("confidence", 50)),
+            ease=int(scales.get("ease", 50)),
+            tension=int(scales.get("tension", 50)),
+            initiative=int(scales.get("initiative", 50)),
+            warmth=int(scales.get("warmth", 50)),
+            clarity=int(scales.get("clarity", 50)),
+        )
+        session.add(stat)
+        await session.commit()
+
+
+async def initial_scan_chats(telegram_id: int, client: TelegramClient):
+    """Scan recent private chats and build initial communication stats."""
+    try:
+        logger.info(f"Starting initial chat scan for user {telegram_id}")
+
+        all_messages = []
+        chat_count = 0
+
+        async for dialog in client.iter_dialogs(limit=30):
+            if not dialog.is_user or dialog.entity.bot:
+                continue
+            if chat_count >= 10:
+                break
+            chat_count += 1
+            try:
+                async for msg in client.iter_messages(dialog.id, limit=20):
+                    if msg.message and len(msg.message) > 3:
+                        sender = "Я" if msg.out else "Собеседник"
+                        all_messages.append({
+                            "sender": sender,
+                            "text": msg.message,
+                            "chat": dialog.name or "?",
+                        })
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                logger.warning(f"Scan: could not read dialog {dialog.id}: {e}")
+
+        if not all_messages:
+            logger.info(f"No messages found during initial scan for {telegram_id}")
+            return
+
+        logger.info(f"Scanned {len(all_messages)} messages from {chat_count} chats for {telegram_id}")
+
+        scales = await analyze_chat_history(all_messages)
+        await save_stats(telegram_id, scales)
+
+        logger.info(f"Initial stats saved for {telegram_id}: {scales}")
+
+        from bot.notifications import _bot
+        if _bot:
+            try:
+                await _bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        "📊 <b>Анализ твоих переписок готов!</b>\n\n"
+                        f"• Уверенность: {scales.get('confidence', 50)}/100\n"
+                        f"• Лёгкость: {scales.get('ease', 50)}/100\n"
+                        f"• Напряжение: {scales.get('tension', 50)}/100\n"
+                        f"• Инициатива: {scales.get('initiative', 50)}/100\n"
+                        f"• Теплота: {scales.get('warmth', 50)}/100\n"
+                        f"• Ясность: {scales.get('clarity', 50)}/100\n\n"
+                        "Открой раздел <b>Шкалы</b> в Mini App чтобы увидеть показатели."
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                logger.error(f"Could not send scan result to {telegram_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"initial_scan_chats failed for {telegram_id}: {e}")
+
+
+async def start_live_reading(telegram_id: int, session_string: str, goals: list[str] = None, run_initial_scan: bool = False):
     if telegram_id in active_clients:
         try:
             await active_clients[telegram_id].disconnect()
@@ -60,13 +137,10 @@ async def start_live_reading(telegram_id: int, session_string: str, goals: list[
                 if not message_text or len(message_text) < 2:
                     return
 
-                # Get context: last 10 messages from this chat (both sides)
                 context = []
                 try:
                     async for msg in client.iter_messages(event.chat_id, limit=10):
                         if msg.message:
-                            sender = "Я" if not msg.out is False else "Собеседник"
-                            # out=True means sent by us, out=False means received
                             sender = "Я" if msg.out else "Собеседник"
                             context.append({"sender": sender, "text": msg.message})
                     context.reverse()
@@ -86,15 +160,26 @@ async def start_live_reading(telegram_id: int, session_string: str, goals: list[
                     analysis_result=result
                 )
 
+                scales = result.get("scales")
+                if scales:
+                    await save_stats(telegram_id, scales)
+
                 from bot.notifications import send_suggestion_to_user, store_variants
                 store_variants(telegram_id, result.get("variants", []))
-                await send_suggestion_to_user(telegram_id, message_text, result)
+
+                # Only step in when Gemini decides help is needed
+                if result.get("needs_help", False):
+                    await send_suggestion_to_user(telegram_id, message_text, result)
 
             except Exception as e:
                 logger.error(f"Error handling message for {telegram_id}: {e}")
 
     active_clients[telegram_id] = client
     logger.info(f"Live reading started for user {telegram_id}")
+
+    if run_initial_scan:
+        asyncio.create_task(initial_scan_chats(telegram_id, client))
+
     return True
 
 
@@ -138,7 +223,8 @@ async def complete_auth_with_code(telegram_id: int, code: str, password: str = N
             phone_code_hash=auth_data["phone_code_hash"]
         )
     except Exception as e:
-        if "two-steps" in str(e).lower() or "password" in str(e).lower():
+        err = str(e).lower()
+        if "two-steps" in err or "password" in err or "2fa" in err:
             if not password:
                 return {"status": "need_password", "message": "Требуется пароль двухфакторной аутентификации"}
             try:
@@ -151,8 +237,8 @@ async def complete_auth_with_code(telegram_id: int, code: str, password: str = N
     session_string = client.session.save()
 
     async with AsyncSessionLocal() as session:
-        user = await session.execute(select(User).where(User.telegram_id == telegram_id))
-        user = user.scalar_one_or_none()
+        result = await session.execute(select(User).where(User.telegram_id == telegram_id))
+        user = result.scalar_one_or_none()
         if user:
             user.telethon_session = session_string
             user.is_session_active = True
@@ -161,9 +247,10 @@ async def complete_auth_with_code(telegram_id: int, code: str, password: str = N
 
     del pending_auth[telegram_id]
 
-    await start_live_reading(telegram_id, session_string)
+    # run_initial_scan=True → immediately scan history and build real stats
+    await start_live_reading(telegram_id, session_string, run_initial_scan=True)
 
-    return {"status": "success", "message": "Сессия подключена! UJI теперь читает переписки в реальном времени."}
+    return {"status": "success", "message": "Сессия подключена! UJI анализирует твои переписки..."}
 
 
 async def restore_all_sessions():
@@ -175,16 +262,14 @@ async def restore_all_sessions():
 
     for user in users:
         try:
-            goals_result = []
-            from sqlalchemy import select as sa_select
             from models import Goal
             async with AsyncSessionLocal() as session:
                 g_result = await session.execute(
-                    sa_select(Goal).where(Goal.user_id == user.telegram_id, Goal.is_active == True)
+                    select(Goal).where(Goal.user_id == user.telegram_id, Goal.is_active == True)
                 )
                 goals_result = [g.text for g in g_result.scalars().all()]
 
-            success = await start_live_reading(user.telegram_id, user.telethon_session, goals_result)
+            success = await start_live_reading(user.telegram_id, user.telethon_session, goals_result, run_initial_scan=False)
             if not success:
                 async with AsyncSessionLocal() as s:
                     u = await s.execute(select(User).where(User.telegram_id == user.telegram_id))

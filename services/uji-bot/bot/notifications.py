@@ -18,6 +18,7 @@ async def send_suggestion_to_user(telegram_id: int, incoming_message: str, resul
     analysis = result.get("analysis", "")
     variants = result.get("variants", [])
     tone = result.get("tone", "")
+    help_reason = result.get("help_reason")
 
     tone_map = {
         "cold": "❄️ холодно",
@@ -29,7 +30,12 @@ async def send_suggestion_to_user(telegram_id: int, incoming_message: str, resul
     tone_label = tone_map.get(tone, tone)
 
     preview = incoming_message[:80] + ("..." if len(incoming_message) > 80 else "")
-    text = f"💬 <b>Новое сообщение:</b>\n<i>«{preview}»</i>"
+
+    # Lead with the reason UJI is stepping in
+    if help_reason:
+        text = f"🤖 <b>UJI:</b> {help_reason}\n\n💬 <i>«{preview}»</i>"
+    else:
+        text = f"💬 <b>Новое сообщение:</b>\n<i>«{preview}»</i>"
 
     if tone_label:
         text += f"\n\n🏷 {tone_label}"
@@ -42,7 +48,6 @@ async def send_suggestion_to_user(telegram_id: int, incoming_message: str, resul
         for i, v in enumerate(variants[:3], 1):
             text += f"\n{i}. {v}"
 
-    # Build inline keyboard — one button per variant to copy
     buttons = []
     for i, v in enumerate(variants[:3], 1):
         buttons.append([

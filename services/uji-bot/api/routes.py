@@ -1,21 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from pydantic import BaseModel
-from datetime import datetime, date
+from datetime import date
 from database import get_db
 from models import User, Suggestion, Goal, CommunicationStat, DailyDigest
-from ai_service import analyze_message, generate_daily_digest
+from ai_service import analyze_message, generate_daily_digest, chat_with_ai
 from telethon_worker import (
     start_auth_request_code,
     complete_auth_with_code,
-    start_live_reading,
-    stop_live_reading,
-    active_clients
+    active_clients,
 )
 import asyncio
-import json
 
 router = APIRouter(prefix="/bot-api")
 
@@ -43,6 +39,12 @@ class GoalRequest(BaseModel):
     text: str
 
 
+class ChatRequest(BaseModel):
+    telegram_id: int
+    message: str
+    history: list[dict] | None = None
+
+
 @router.get("/healthz")
 async def health():
     return {"status": "ok"}
@@ -62,15 +64,30 @@ async def analyze(req: AnalyzeRequest, db: AsyncSession = Depends(get_db)):
 
     analysis = await analyze_message(req.message, req.context, goals)
 
-    suggestion = Suggestion(
-        user_id=req.telegram_id,
-        incoming_message=req.message,
-        analysis=analysis.get("analysis"),
-        variants=analysis.get("variants", []),
-        tone=analysis.get("tone")
-    )
-    db.add(suggestion)
-    await db.commit()
+    if user:
+        suggestion = Suggestion(
+            user_id=req.telegram_id,
+            incoming_message=req.message,
+            analysis=analysis.get("analysis"),
+            variants=analysis.get("variants", []),
+            tone=analysis.get("tone")
+        )
+        db.add(suggestion)
+
+        scales = analysis.get("scales")
+        if scales:
+            stat = CommunicationStat(
+                user_id=req.telegram_id,
+                confidence=int(scales.get("confidence", 50)),
+                ease=int(scales.get("ease", 50)),
+                tension=int(scales.get("tension", 50)),
+                initiative=int(scales.get("initiative", 50)),
+                warmth=int(scales.get("warmth", 50)),
+                clarity=int(scales.get("clarity", 50)),
+            )
+            db.add(stat)
+
+        await db.commit()
 
     if req.telegram_id in live_ws_connections:
         for ws in live_ws_connections[req.telegram_id]:
@@ -80,6 +97,15 @@ async def analyze(req: AnalyzeRequest, db: AsyncSession = Depends(get_db)):
                 pass
 
     return analysis
+
+
+@router.post("/chat")
+async def chat_endpoint(req: ChatRequest):
+    try:
+        reply = await chat_with_ai(req.message, req.history)
+        return {"reply": reply}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/user/{telegram_id}")
@@ -110,10 +136,8 @@ async def get_stats(telegram_id: int, db: AsyncSession = Depends(get_db)):
     stat = result.scalar_one_or_none()
 
     if not stat:
-        return {
-            "confidence": 50, "ease": 50, "tension": 50,
-            "initiative": 50, "warmth": 50, "clarity": 50
-        }
+        return {"confidence": None, "ease": None, "tension": None,
+                "initiative": None, "warmth": None, "clarity": None, "no_data": True}
 
     return {
         "confidence": stat.confidence,
@@ -122,7 +146,8 @@ async def get_stats(telegram_id: int, db: AsyncSession = Depends(get_db)):
         "initiative": stat.initiative,
         "warmth": stat.warmth,
         "clarity": stat.clarity,
-        "recorded_at": stat.recorded_at.isoformat()
+        "recorded_at": stat.recorded_at.isoformat(),
+        "no_data": False,
     }
 
 
@@ -272,9 +297,12 @@ async def websocket_endpoint(websocket: WebSocket, telegram_id: int):
 
     try:
         while True:
-            data = await websocket.receive_text()
+            await websocket.receive_text()
     except WebSocketDisconnect:
         if telegram_id in live_ws_connections:
-            live_ws_connections[telegram_id].remove(websocket)
+            try:
+                live_ws_connections[telegram_id].remove(websocket)
+            except ValueError:
+                pass
             if not live_ws_connections[telegram_id]:
                 del live_ws_connections[telegram_id]
