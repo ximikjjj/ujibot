@@ -16,6 +16,15 @@ export default function BottomNav() {
       ),
     },
     {
+      path: "/chat",
+      label: "Чат",
+      icon: (active: boolean) => (
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+        </svg>
+      ),
+    },
+    {
       path: "/scales",
       label: t.nav.scales,
       icon: (active: boolean) => (
@@ -63,7 +72,7 @@ export default function BottomNav() {
             <Link key={tab.path} href={tab.path} className="flex-1">
               <div className={`flex flex-col items-center gap-1 py-2.5 transition-colors ${active ? "text-primary" : "text-muted-foreground"}`}>
                 {tab.icon(active)}
-                <span className="text-[10px] font-medium tracking-wide">{tab.label}</span>
+                <span className="text-[9px] font-medium tracking-wide">{tab.label}</span>
               </div>
             </Link>
           );

@@ -50,6 +50,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ telegram_id, code, password }),
     }),
+  sendChat: (telegram_id: number, message: string, history: ChatMessage[]) =>
+    req<{ reply: string }>(`/chat`, {
+      method: "POST",
+      body: JSON.stringify({ telegram_id, message, history }),
+    }),
 };
 
 export interface UserProfile {
@@ -77,12 +82,13 @@ export interface Suggestion {
 }
 
 export interface Stats {
-  confidence: number;
-  ease: number;
-  tension: number;
-  initiative: number;
-  warmth: number;
-  clarity: number;
+  confidence: number | null;
+  ease: number | null;
+  tension: number | null;
+  initiative: number | null;
+  warmth: number | null;
+  clarity: number | null;
+  no_data?: boolean;
 }
 
 export interface Goal {
@@ -99,4 +105,9 @@ export interface Digest {
   funniest_moment?: string;
   dead_dialogs: string[];
   goals_progress: Record<string, string>;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
 }

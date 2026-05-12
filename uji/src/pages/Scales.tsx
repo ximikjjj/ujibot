@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
+import { useLocation } from "wouter";
 import { api, getTelegramId, type Stats } from "@/lib/api";
 import { useApp } from "@/contexts/AppContext";
 
 export default function Scales() {
   const { t } = useApp();
+  const [, setLocation] = useLocation();
   const tgId = getTelegramId();
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [noData, setNoData] = useState(false);
 
   const SCALES = [
     { key: "confidence" as keyof Stats, label: t.scales.confidence, color: "#3b82f6", desc: t.scales.confidenceDesc },
@@ -18,11 +21,27 @@ export default function Scales() {
   ];
 
   useEffect(() => {
-    api.getStats(tgId).then(setStats).catch(() => {}).finally(() => setLoading(false));
+    api.getStats(tgId)
+      .then((s) => {
+        if (s.no_data) {
+          setNoData(true);
+        } else {
+          setStats(s);
+        }
+      })
+      .catch(() => setNoData(true))
+      .finally(() => setLoading(false));
   }, [tgId]);
 
-  const avg = stats
-    ? Math.round(Object.values(stats).filter((v) => typeof v === "number").reduce((a: number, b) => a + (b as number), 0) / 6)
+  const validValues = stats
+    ? Object.entries(stats)
+        .filter(([k]) => ["confidence","ease","tension","initiative","warmth","clarity"].includes(k))
+        .map(([, v]) => v as number)
+        .filter((v) => typeof v === "number")
+    : [];
+
+  const avg = validValues.length > 0
+    ? Math.round(validValues.reduce((a, b) => a + b, 0) / validValues.length)
     : 0;
 
   return (
@@ -48,8 +67,31 @@ export default function Scales() {
         </div>
       )}
 
+      {!loading && noData && (
+        <div className="mt-10 text-center space-y-4 px-2">
+          <div className="w-16 h-16 mx-auto rounded-2xl bg-card border border-border/60 flex items-center justify-center">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-muted-foreground">
+              <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/>
+            </svg>
+          </div>
+          <div>
+            <p className="text-foreground font-semibold">Показатели ещё не готовы</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Подключи Telegram-сессию — UJI проанализирует твои переписки и сразу покажет реальные показатели
+            </p>
+          </div>
+          <button
+            onClick={() => setLocation("/connect")}
+            className="mt-2 px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold"
+          >
+            Подключить сессию
+          </button>
+        </div>
+      )}
+
       {stats && SCALES.map((s) => {
         const value = stats[s.key] as number;
+        if (value === null || value === undefined) return null;
         const intensity = value >= 70 ? t.scales.great : value >= 45 ? t.scales.normal : t.scales.weak;
         const intensityColor = value >= 70 ? "text-emerald-400" : value >= 45 ? "text-yellow-400" : "text-red-400";
 

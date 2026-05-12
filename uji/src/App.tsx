@@ -10,6 +10,7 @@ import Goals from "@/pages/Goals";
 import Digest from "@/pages/Digest";
 import Settings from "@/pages/Settings";
 import Onboarding from "@/pages/Onboarding";
+import Chat from "@/pages/Chat";
 
 const queryClient = new QueryClient();
 
@@ -50,6 +51,7 @@ function AppContent() {
         <Route path="/scales" component={Scales} />
         <Route path="/goals" component={Goals} />
         <Route path="/digest" component={Digest} />
+        <Route path="/chat" component={Chat} />
         <Route path="/settings" component={Settings} />
         <Route component={NotFound} />
       </Switch>
