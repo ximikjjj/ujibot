@@ -1,0 +1,14 @@
+aiogram==3.13.1
+telethon==1.38.1
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+openai==1.58.1
+google-generativeai==0.8.3
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+alembic==1.14.0
+python-dotenv==1.0.1
+pydantic>=2.4.1,<2.10
+pydantic-settings>=2.4.0,<2.7
+httpx==0.28.1
+cryptg==0.4.0
